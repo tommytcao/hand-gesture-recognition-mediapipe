@@ -12,6 +12,63 @@ import mediapipe as mp
 
 from utils import CvFpsCalc
 from model import KeyPointClassifier
+import time
+
+# ---- T3 Code ----
+
+hand_positions = {"Left": [], "Right": []}
+hand_on_proper_side = {"Left": True, "Right": True}
+hands_required_reset = {"Left": False, "Right": False}
+reload_time = 1.0  # Cooldown time in seconds
+last_reload_time = {"Left": 0, "Right": 0}
+
+
+def log_hand_position(hand_identity, position):
+    global hand_on_proper_side, hands_required_reset, hand_positions, last_reload_time
+
+    hand_positions[hand_identity].append(position)
+    current_time = time.time()
+
+    if (
+        not hands_required_reset[hand_identity]
+        and len(hand_positions[hand_identity]) >= 4
+        and all(p == position for p in hand_positions[hand_identity][-4:])
+        and (current_time - last_reload_time[hand_identity]) >= reload_time
+        and position != hand_identity
+    ):
+        hand_on_proper_side[hand_identity] = False
+        hands_required_reset[hand_identity] = True
+        print(hand_identity + ": fired dart")
+
+    elif hands_required_reset[hand_identity]:
+        if (
+            hand_identity == "Left"
+            and position == "Left"
+            and (current_time - last_reload_time[hand_identity]) >= reload_time
+        ):
+            hands_required_reset[hand_identity] = False
+            hand_on_proper_side[hand_identity] = True
+            last_reload_time[hand_identity] = current_time
+            print(hand_identity + ": reloaded")
+
+        elif (
+            hand_identity == "Right"
+            and position == "Right"
+            and (current_time - last_reload_time[hand_identity]) >= reload_time
+        ):
+            hands_required_reset[hand_identity] = False
+            hand_on_proper_side[hand_identity] = True
+            last_reload_time[hand_identity] = current_time
+            print(hand_identity + ": reloaded")
+
+    if len(hand_positions[hand_identity]) > 100:
+        hand_positions[hand_identity].pop(0)
+
+
+# Check if hand position changed
+
+
+# ---- T3 Code END ----
 
 
 def get_args():
@@ -26,13 +83,13 @@ def get_args():
         "--min_detection_confidence",
         help="min_detection_confidence",
         type=float,
-        default=0.3,
+        default=0.1,
     )
     parser.add_argument(
         "--min_tracking_confidence",
         help="min_tracking_confidence",
         type=int,
-        default=0.3,
+        default=0.1,
     )
 
     args = parser.parse_args()
@@ -115,14 +172,13 @@ def main():
         image.flags.writeable = False
         results = hands.process(image)
         image.flags.writeable = True
-
         #  ####################################################################
         if results.multi_hand_landmarks is not None:
             for hand_landmarks, handedness in zip(
                 results.multi_hand_landmarks, results.multi_handedness
             ):
                 # Bounding box calculation
-                brect = calc_bounding_rect(debug_image, hand_landmarks)
+                brect, side = calc_bounding_rect(debug_image, hand_landmarks)
                 # Landmark calculation
                 landmark_list = calc_landmark_list(debug_image, hand_landmarks)
 
@@ -144,7 +200,10 @@ def main():
                     brect,
                     handedness,
                     keypoint_classifier_labels[hand_sign_id],
+                    side,
                 )
+                log_hand_position(handedness.classification[0].label[0:], side)
+
         else:
             point_history.append([0, 0])
 
@@ -172,8 +231,15 @@ def calc_bounding_rect(image, landmarks):
         landmark_array = np.append(landmark_array, landmark_point, axis=0)
 
     x, y, w, h = cv.boundingRect(landmark_array)
- [x, y, x + w, y + h]
-    return
+
+    center_x = x + w // 2
+
+    if center_x < image_width // 2:
+        side = "Left"
+    else:
+        side = "Right"
+
+    return ([x, y, x + w, y + h], side)
 
 
 def calc_landmark_list(image, landmarks):
@@ -525,12 +591,11 @@ def draw_bounding_rect(use_brect, image, brect):
     return image
 
 
-def draw_info_text(image, brect, handedness, hand_sign_text):
+def draw_info_text(image, brect, handedness, hand_sign_text, side):
     cv.rectangle(image, (brect[0], brect[1]), (brect[2], brect[1] - 22), (0, 0, 0), -1)
-
     info_text = handedness.classification[0].label[0:]
     if hand_sign_text != "":
-        info_text = info_text + ":" + hand_sign_text
+        info_text = info_text + ":" + hand_sign_text + "currentSide: " + side
     cv.putText(
         image,
         info_text,
